@@ -26,8 +26,9 @@ try:
 
 except KeyboardInterrupt:
     print("\nPrograma detenido por el usuario.")
+    dht_device.exit()
+    print("GPIO liberados correctamente (interrupcion por teclado).")
 
 finally:
-    # Liberar el recurso del sensor
     dht_device.exit()
-    print("GPIO liberados correctamente.")
+    print("GPIO liberados correctamente (salida del programa).")
