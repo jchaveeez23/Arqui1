@@ -1,0 +1,5 @@
+Para la LCD:
+SDA: pin 3
+SCL: pin 5
+
+DHT11: pin 4
