@@ -7,35 +7,21 @@ import board
 import adafruit_dht
 import RPi.GPIO as GPIO
 from RPLCD.i2c import CharLCD
-
-from pymongo import MongoClient, errors
+from pymongo import MongoClient
 
 
 # ------------------ MongoDB ------------------
-#gg
 
-# Opción B: directo (descomenta si no usarás .env)
 url =  "mongodb+srv://TULIOADMIN:API-NEST-MONGO@cluster0.5vi63hb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-DB_NAME     = "PRYECTO1_ACYE1"
 
-
-client = MongoClient(url, serverSelectionTimeoutMS=5000)
-db = client.get_database(DB_NAME)
+client = MongoClient(url)
+db = client.get_database("PRYECTO1_ACYE1")
 
 # Colecciones solicitadas
 temp_collection      = db.get_collection("temp")
 cooler_collection    = db.get_collection("cooler")
 alarm_rgb_collection = db.get_collection("alarm_rgb")
 buzzer_collection    = db.get_collection("buzzer")
-
-# Índices útiles (no fallar si ya existen)
-try:
-    temp_collection.create_index([("timestamp", -1)])
-    cooler_collection.create_index([("timestamp", -1)])
-    alarm_rgb_collection.create_index([("timestamp", -1)])
-    buzzer_collection.create_index([("timestamp", -1)])
-except Exception:
-    pass
 
 # ------------------ Configuración HW ------------------
 # LCD I2C
@@ -136,62 +122,84 @@ def blink_red_blue_with_buzzer(duration=ALERT_WINDOW, period=BLINK_PERIOD):
     led_off()
     buzzer_off()
 
-# ------------------ Persistencia en Mongo ------------------
-def save_temp_reading(temp_c, hum):
-    """Guarda cada lectura en 'temp'."""
+# ------------------ Mongo ------------------
+# -- FUNCION PARA GUARDAR EL REGISTRO DE LA TEMPERATURA ----
+def save_sensor_reading(temperature: float, humidity: float):
+    """
+    Crea un documento con los datos de temperatura y lo inserta en la colección correspondiente.
+    """
     try:
-        doc = {
-            "temperature": float(temp_c) if temp_c is not None else None,
-            "humidity": float(hum) if hum is not None else None,
-            "timestamp": datetime.now(timezone.utc)
+        data = {
+            "temperature": temperature,
+            "humidity": humidity,
+            "timestamp": datetime.now()
         }
-        temp_collection.insert_one(doc)
-        # print("Mongo: temp ok")
-    except errors.PyMongoError as e:
-        print("Mongo ERROR temp:", e)
+        temp_collection.insert_one(data)
+        print("Datos de temperatura y humedad guardados en MongoDB.")
+    except Exception as e:
+        print(f"Error al guardar datos del sensor en MongoDB: {e}")
 
-def log_cooler(status, temp_c=None):
-    """Registra cambios de estado del ventilador en 'cooler'."""
+# --- FUNCIONES PARA EL VENTILADOR ---
+
+## --  FUNCION QUE REGUISRA EL ENCENDIDO DEL EL VENTILADOR ----- 
+def turn_on_cooler():
+    """
+    Registra el encendido del ventilador.
+    """
     try:
-        doc = {
-            "timestamp": datetime.now(timezone.utc),
-            "status": status,                  # 'Encendido' / 'Apagado'
-            "temperature": float(temp_c) if temp_c is not None else None
+        now = datetime.now()
+        data = {
+            "fecha": now.strftime("%Y-%m-%d"),
+            "hora": now.strftime("%H:%M:%S"),
+            "status": "Encendido"
         }
-        cooler_collection.insert_one(doc)
-        print(f"Mongo cooler: {status}")
-    except errors.PyMongoError as e:
-        print("Mongo ERROR cooler:", e)
+        cooler_collection.insert_one(data)
+        print("Ventilador activado y registro guardado.")
+    except Exception as e:
+        print(f"Error al guardar registro del ventilador: {e}")
 
-def log_alarm_rgb(event, temp_c=None):
-    """Registra activación/desactivación de alarma RGB en 'alarm_rgb'."""
+## -- FUNCION REGUISTRA EL APAGDO  DEL VENTILADOR - ---- 
+def turn_off_cooler():
+    """
+    Registra el apagado del ventilador.
+    """
     try:
-        doc = {
-            "timestamp": datetime.now(timezone.utc),
-            "event": event,                    # 'activated' / 'deactivated'
-            "temperature": float(temp_c) if temp_c is not None else None,
-            "description": "Alarma RGB por temperatura"
+        now = datetime.now()
+        data = {
+            "fecha": now.strftime("%Y-%m-%d"),
+            "hora": now.strftime("%H:%M:%S"),
+            "status": "Apagado"
         }
-        alarm_rgb_collection.insert_one(doc)
-        print(f"Mongo alarm_rgb: {event}")
-    except errors.PyMongoError as e:
-        print("Mongo ERROR alarm_rgb:", e)
+        cooler_collection.insert_one(data)
+        print(" Ventilador apagado y registro guardado.")
+    except Exception as e:
+        print(f" Error al guardar registro del ventilador: {e}")
 
-def log_buzzer(event, temp_c=None):
-    """Registra activación/desactivación del buzzer en 'buzzer'."""
+
+## -- FUNCIONES QUE REGUISTAN LA ACTIVIDAD DE LA ALARMA POR TEMPERATURA  ---  
+
+def activate_alarm(temperature: float):
+    """
+    Registra la activación de la alarma LED RGB y del buzzer.
+    """
     try:
-        doc = {
-            "timestamp": datetime.now(timezone.utc),
-            "event": event,                    # 'activated' / 'deactivated'
-            "temperature": float(temp_c) if temp_c is not None else None,
-            "description": "Buzzer por temperatura"
+        now = datetime.now()
+        data = {
+            "fecha": now.strftime("%Y-%m-%d"),
+            "hora": now.strftime("%H:%M:%S"),
+            "temperatura_detectada": temperature,
+            "evento": "Alarma activada por alta temperatura"
         }
-        buzzer_collection.insert_one(doc)
-        print(f"Mongo buzzer: {event}")
-    except errors.PyMongoError as e:
-        print("Mongo ERROR buzzer:", e)
+        # Registrar en la colección de la alarma LED RGB
+        alarm_rgb_collection.insert_one(data)
+        # Registrar en la colección del buzzer
+        buzzer_collection.insert_one(data)
+        print(" Alarma (LED RGB y Buzzer) activada y registro guardado.")
+    except Exception as e:
+        print(f" Error al guardar registro de la alarma: {e}")
 
-# ------------------ Lógica de control con histéresis ------------------
+
+# ------------------ Lógica de control ------------------
 def update_fan(temp_c):
     """Controla estado del ventilador y registra cambios en Mongo."""
     if temp_c is None:
