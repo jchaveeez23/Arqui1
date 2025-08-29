@@ -12,6 +12,7 @@ from pymongo import MongoClient, errors
 
 
 # ------------------ MongoDB ------------------
+#gg
 
 # Opción B: directo (descomenta si no usarás .env)
 MONGODB_URI = "mongodb+srv://TULIOADMIN:API-NEST-MONGO@cluster0.5vi63hb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
