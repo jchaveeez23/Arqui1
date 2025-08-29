@@ -127,7 +127,7 @@ def now_ts():
 # URL de conexión a MongoDB Atlas (usa tu propia credencial/URI)
 url = "mongodb+srv://TULIOADMIN:API-NEST-MONGO@cluster0.5vi63hb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
-client = MongoClient(url, tls=True)
+client = MongoClient(url, tls=True, tlsAllowInvalidCertificates=False)
 db = client.get_database("PRYECTO1_ACYE1")
 
 # Colecciones
