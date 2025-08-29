@@ -15,11 +15,11 @@ from pymongo import MongoClient, errors
 #gg
 
 # Opción B: directo (descomenta si no usarás .env)
-MONGODB_URI = "mongodb+srv://TULIOADMIN:API-NEST-MONGO@cluster0.5vi63hb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+url =  "mongodb+srv://TULIOADMIN:API-NEST-MONGO@cluster0.5vi63hb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 DB_NAME     = "PRYECTO1_ACYE1"
 
 
-client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+client = MongoClient(url, serverSelectionTimeoutMS=5000)
 db = client.get_database(DB_NAME)
 
 # Colecciones solicitadas
