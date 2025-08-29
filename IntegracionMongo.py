@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import os
 import time
 from datetime import datetime, timezone
 
@@ -9,25 +8,11 @@ import RPi.GPIO as GPIO
 from RPLCD.i2c import CharLCD
 from pymongo import MongoClient
 
-
-# ------------------ MongoDB ------------------
-
-url =  "mongodb+srv://TULIOADMIN:API-NEST-MONGO@cluster0.5vi63hb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-
-client = MongoClient(url)
-db = client.get_database("PRYECTO1_ACYE1")
-
-# Colecciones solicitadas
-temp_collection      = db.get_collection("temp")
-cooler_collection    = db.get_collection("cooler")
-alarm_rgb_collection = db.get_collection("alarm_rgb")
-buzzer_collection    = db.get_collection("buzzer")
-
-# ------------------ Configuración HW ------------------
+# ===================== Configuración de Hardware =====================
 # LCD I2C
 lcd = CharLCD(
     i2c_expander='PCF8574',
-    address=0x27,   # 0x27 visto en tu i2cdetect
+    address=0x27,
     port=1,
     cols=16,
     rows=2,
@@ -36,18 +21,19 @@ lcd = CharLCD(
 )
 
 # DHT11 en GPIO4
+# Si tu Pi es reciente y tienes errores de lectura, usa: use_pulseio=False
 dht = adafruit_dht.DHT11(board.D4)
 
-# LED RGB (cátodo común)
-PIN_R = 13
-PIN_G = 19  # no usado
-PIN_B = 26
+# GPIO para LED RGB (BCM) - cátodo común
+PIN_R = 13   # Rojo
+PIN_G = 19   # Verde (no usado)
+PIN_B = 26   # Azul
 
 # Buzzer activo
-PIN_BUZZER = 21
+PIN_BUZZER = 6   # GPIO6
 
-# Ventilador (5V con transistor/MOSFET)
-PIN_FAN = 20
+# Ventilador (control con transistor/MOSFET)
+PIN_FAN = 5      # GPIO5
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(PIN_R, GPIO.OUT, initial=GPIO.LOW)
@@ -57,19 +43,19 @@ GPIO.setup(PIN_BUZZER, GPIO.OUT, initial=GPIO.LOW)
 GPIO.setup(PIN_FAN, GPIO.OUT, initial=GPIO.LOW)
 
 # Umbrales
-ALERT_ON_TEMP  = 27.0  # activar alarma
-ALERT_OFF_TEMP = 26.5  # desactivar alarma (histeresis)
-FAN_ON_TEMP    = 23.0  # encender ventilador
-FAN_OFF_TEMP   = 22.5  # apagar ventilador (histeresis)
+THRESHOLD_ALERT = 27.0   # °C -> LED/Buzzer
+FAN_ON_TEMP     = 23.0   # °C -> Ventilador ON
+FAN_OFF_TEMP    = 22.5   # °C -> Ventilador OFF (histéresis)
 
-BLINK_PERIOD = 0.4   # s
-ALERT_WINDOW = 5.0   # s
+BLINK_PERIOD  = 0.4      # s entre cambios rojo/azul
+ALERT_WINDOW  = 5.0      # s de alerta
+ALARM_COOLDOWN_S = 30    # evita registrar la alarma demasiadas veces
 
-# Estados
-fan_active   = False
-alert_active = False  # para registrar activación/desactivación una sola vez
+# Estado
+fan_active = False
+last_alarm_ts = 0.0
 
-# ------------------ Utilidades HW ------------------
+# ===================== Utilidades de I/O =====================
 def led_off():
     GPIO.output(PIN_R, GPIO.LOW)
     GPIO.output(PIN_G, GPIO.LOW)
@@ -102,14 +88,19 @@ def fan_off():
         print("FAN: OFF")
     fan_active = False
 
-def show_lcd(line1="", line2=""):
-    lcd.clear()
-    lcd.write_string(line1[:16])
-    if line2:
-        lcd.cursor_pos = (1, 0)
-        lcd.write_string(line2[:16])
+def update_fan(temp_c):
+    """Control con histéresis + registro en MongoDB cuando cambia el estado."""
+    if temp_c is None:
+        return
+    if (not fan_active) and (temp_c >= FAN_ON_TEMP):
+        fan_on()
+        log_cooler("Encendido", temp_c)
+    elif fan_active and (temp_c <= FAN_OFF_TEMP):
+        fan_off()
+        log_cooler("Apagado", temp_c)
 
 def blink_red_blue_with_buzzer(duration=ALERT_WINDOW, period=BLINK_PERIOD):
+    """Parpadea rojo/azul y hace 'beep' con el buzzer durante 'duration' segundos."""
     end = time.time() + duration
     state = 0
     while time.time() < end:
@@ -122,119 +113,70 @@ def blink_red_blue_with_buzzer(duration=ALERT_WINDOW, period=BLINK_PERIOD):
     led_off()
     buzzer_off()
 
-# ------------------ Mongo ------------------
-# -- FUNCION PARA GUARDAR EL REGISTRO DE LA TEMPERATURA ----
+def show_lcd(line1="", line2=""):
+    lcd.clear()
+    lcd.write_string(line1[:16])
+    if line2:
+        lcd.cursor_pos = (1, 0)
+        lcd.write_string(line2[:16])
+
+def now_ts():
+    return datetime.now(timezone.utc)
+
+# ===================== MongoDB =====================
+# URL de conexión a MongoDB Atlas (usa tu propia credencial/URI)
+url = "mongodb+srv://TULIOADMIN:API-NEST-MONGO@cluster0.5vi63hb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+
+client = MongoClient(url, tls=True)
+db = client.get_database("PRYECTO1_ACYE1")
+
+# Colecciones
+temp_collection      = db.get_collection("TEMPERATURE_SENSOR")  # lecturas sensor
+cooler_collection    = db.get_collection("COOLER")               # eventos ventilador
+alarm_rgb_collection = db.get_collection("ALARM_LED_RGB")        # eventos LED RGB
+buzzer_collection    = db.get_collection("BUZZER")               # eventos buzzer
+
+# ---- Funciones de guardado ----
 def save_sensor_reading(temperature: float, humidity: float):
-    """
-    Crea un documento con los datos de temperatura y lo inserta en la colección correspondiente.
-    """
     try:
-        data = {
+        doc = {
             "temperature": temperature,
             "humidity": humidity,
-            "timestamp": datetime.now()
+            "timestamp": now_ts()
         }
-        temp_collection.insert_one(data)
-        print("Datos de temperatura y humedad guardados en MongoDB.")
+        temp_collection.insert_one(doc)
+        print(" Lectura guardada en TEMPERATURE_SENSOR.")
     except Exception as e:
-        print(f"Error al guardar datos del sensor en MongoDB: {e}")
+        print(f" Error guardando lectura: {e}")
 
-# --- FUNCIONES PARA EL VENTILADOR ---
-
-## --  FUNCION QUE REGUISRA EL ENCENDIDO DEL EL VENTILADOR ----- 
-def turn_on_cooler():
-    """
-    Registra el encendido del ventilador.
-    """
+def log_cooler(status: str, temp: float):
     try:
-        now = datetime.now()
-        data = {
-            "fecha": now.strftime("%Y-%m-%d"),
-            "hora": now.strftime("%H:%M:%S"),
-            "status": "Encendido"
+        doc = {
+            "status": status,                  # 'Encendido' | 'Apagado'
+            "temperature": temp,
+            "timestamp": now_ts()
         }
-        cooler_collection.insert_one(data)
-        print("Ventilador activado y registro guardado.")
+        cooler_collection.insert_one(doc)
+        print(f" Cooler {status} registrado.")
     except Exception as e:
-        print(f"Error al guardar registro del ventilador: {e}")
-
-## -- FUNCION REGUISTRA EL APAGDO  DEL VENTILADOR - ---- 
-def turn_off_cooler():
-    """
-    Registra el apagado del ventilador.
-    """
-    try:
-        now = datetime.now()
-        data = {
-            "fecha": now.strftime("%Y-%m-%d"),
-            "hora": now.strftime("%H:%M:%S"),
-            "status": "Apagado"
-        }
-        cooler_collection.insert_one(data)
-        print(" Ventilador apagado y registro guardado.")
-    except Exception as e:
-        print(f" Error al guardar registro del ventilador: {e}")
-
-
-## -- FUNCIONES QUE REGUISTAN LA ACTIVIDAD DE LA ALARMA POR TEMPERATURA  ---  
+        print(f" Error guardando COOLER: {e}")
 
 def activate_alarm(temperature: float):
-    """
-    Registra la activación de la alarma LED RGB y del buzzer.
-    """
+    """Registra activación de alarma (LED RGB + Buzzer) en ambas colecciones."""
     try:
-        now = datetime.now()
-        data = {
-            "fecha": now.strftime("%Y-%m-%d"),
-            "hora": now.strftime("%H:%M:%S"),
-            "temperatura_detectada": temperature,
-            "evento": "Alarma activada por alta temperatura"
+        doc = {
+            "status": "activated",
+            "temperature": temperature,
+            "timestamp": now_ts(),
+            "event": "Alarma activada por alta temperatura"
         }
-        # Registrar en la colección de la alarma LED RGB
-        alarm_rgb_collection.insert_one(data)
-        # Registrar en la colección del buzzer
-        buzzer_collection.insert_one(data)
-        print(" Alarma (LED RGB y Buzzer) activada y registro guardado.")
+        alarm_rgb_collection.insert_one(doc)
+        buzzer_collection.insert_one(doc)
+        print(" Alarma activada registrada en ALARM_LED_RGB y BUZZER.")
     except Exception as e:
-        print(f" Error al guardar registro de la alarma: {e}")
+        print(f"Error guardando alarma: {e}")
 
-
-# ------------------ Lógica de control ------------------
-def update_fan(temp_c):
-    """Controla estado del ventilador y registra cambios en Mongo."""
-    if temp_c is None:
-        return
-    if (not fan_active) and (temp_c >= FAN_ON_TEMP):
-        fan_on()
-        log_cooler("Encendido", temp_c)
-    elif fan_active and (temp_c <= FAN_OFF_TEMP):
-        fan_off()
-        log_cooler("Apagado", temp_c)
-
-def update_alarm(temp_c):
-    """Controla alarma (RGB + buzzer) con histéresis y registra en Mongo."""
-    global alert_active
-    if temp_c is None:
-        return
-
-    # Activar
-    if (not alert_active) and (temp_c >= ALERT_ON_TEMP):
-        alert_active = True
-        log_alarm_rgb("activated", temp_c)
-        log_buzzer("activated", temp_c)
-        print(f"ALERTA: Temp >= {ALERT_ON_TEMP:.1f}C")
-        show_lcd("ALERTA TEMP!", "LED+Buzzer")
-        blink_red_blue_with_buzzer()
-
-    # Desactivar
-    elif alert_active and (temp_c <= ALERT_OFF_TEMP):
-        alert_active = False
-        log_alarm_rgb("deactivated", temp_c)
-        log_buzzer("deactivated", temp_c)
-        led_off()
-        buzzer_off()
-
-# ------------------ Programa principal ------------------
+# ===================== Programa principal =====================
 try:
     show_lcd("Leyendo DHT11", "Espere...")
     time.sleep(1)
@@ -246,19 +188,27 @@ try:
             if t is not None and h is not None:
                 print("Temperatura: {:.1f} C".format(t))
                 print("Humedad: {:.1f} %".format(h))
-                show_lcd("Temp: {:.1f}C".format(t),
-                         "Hum:  {:.1f}%".format(h))
+                show_lcd("Temp: {:.1f}C".format(t), "Hum:  {:.1f}%".format(h))
 
-                # Guardar lectura
-                save_temp_reading(t, h)
+                # Guarda lectura en Mongo
+                save_sensor_reading(t, h)
 
-                # Control ventilador y alarma (con log)
+                # Control del ventilador (con log en cambios)
                 update_fan(t)
-                update_alarm(t)
 
-                # Si no hay alerta activa, espera normal
-                if not alert_active:
-                    time.sleep(5)
+                # Alarma por alta temperatura (con cooldown de registros)
+                if t >= THRESHOLD_ALERT:
+                    now_s = time.time()
+                    if now_s - last_alarm_ts >= ALARM_COOLDOWN_S:
+                        activate_alarm(t)
+                        last_alarm_ts = now_s
+                    print("ALERTA!! >= {:.1f}C -> LED+Buzzer".format(THRESHOLD_ALERT))
+                    show_lcd("ALERTA!!", "TEMPERATURA ALTA")
+                    blink_red_blue_with_buzzer()  # ~5 s de alerta
+                else:
+                    led_off()
+                    buzzer_off()
+                    time.sleep(5)  # espera normal entre lecturas
             else:
                 print("Lectura nula, reintentando...")
                 show_lcd("Lectura nula", "Reintentando...")
@@ -268,14 +218,13 @@ try:
         except RuntimeError as e:
             print("Error de lectura:", e.args[0])
             show_lcd("Error lectura", "Reintentando...")
-            led_off(); buzzer_off()
-            # decisión: por seguridad apaga fan si lo prefieres
-            # fan_off()
+            led_off(); buzzer_off(); fan_off()
             time.sleep(2)
 
 except KeyboardInterrupt:
     print("\nPrograma detenido por el usuario.")
 finally:
+    # Cierre ordenado
     try:
         dht.exit()
     except Exception:
@@ -293,4 +242,4 @@ finally:
         client.close()
     except Exception:
         pass
-    print("GPIO/LCD/FAN cerrados. MongoDB cerrado.")
+    print("GPIO/LCD/FAN liberados y MongoDB cerrado.")
