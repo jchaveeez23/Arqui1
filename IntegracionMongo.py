@@ -5,27 +5,31 @@ import adafruit_dht
 import RPi.GPIO as GPIO
 from RPLCD.i2c import CharLCD
 
-# ==== MONGODB (usa tu URL tal cual) ====
+# ==== MONGODB (con CA bundle) ====
 from datetime import datetime, timezone
 from pymongo import MongoClient
+import certifi
 
 def utcnow():
     return datetime.now(timezone.utc)
 
-# URL de conexión a MongoDB Atlas (la tuya)
 url = "mongodb+srv://TULIOADMIN:API-NEST-MONGO@cluster0.5vi63hb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 
-# Conexión Global a la base de datos
 try:
-    client = MongoClient(url, serverSelectionTimeoutMS=5000)
+    client = MongoClient(
+        url,
+        tls=True,
+        tlsCAFile=certifi.where(),   # <- certificados raíz
+        serverSelectionTimeoutMS=8000
+    )
     client.admin.command("ping")
     print("MongoDB: conectado OK")
     db = client.get_database("PRYECTO1_ACYE1")
-    # Colecciones
-    temp_collection       = db.get_collection("TEMPERATURE_SENSOR")  # sensor de temperatura
-    cooler_collection     = db.get_collection("COOLER")              # ventilador
-    alarm_rgb_collection  = db.get_collection("ALARM_LED_RGB")       # alarma RGB
-    buzzer_collection     = db.get_collection("BUZZER")              # buzzer
+
+    temp_collection       = db.get_collection("TEMPERATURE_SENSOR")
+    cooler_collection     = db.get_collection("COOLER")
+    alarm_rgb_collection  = db.get_collection("ALARM_LED_RGB")
+    buzzer_collection     = db.get_collection("BUZZER")
     MONGO_READY = True
 except Exception as e:
     print("MongoDB: no disponible ->", e)
